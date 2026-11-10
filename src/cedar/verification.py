@@ -63,6 +63,12 @@ def check(mode: str, golden: Sequence[str], candidate: Sequence[str], top: str, 
             p = flow.parse_conformal(r)
             return CheckResult(str(p["status"]), mode, str(p["detail"]), round(time.monotonic() - t0, 2),
                                r.outputs.get("verification_rpt", ""))
+        if mode == "external":
+            if ctx is None:
+                return CheckResult("unavailable", mode, "no EDA tool profile", 0.0)
+            p = flow.external_check(ctx, list(golden), list(candidate), work)
+            return CheckResult(str(p["status"]), mode, str(p["detail"]), round(time.monotonic() - t0, 2),
+                               str(work / "verdict.json"))
         if mode == "simulation":
             if ctx is None:
                 return CheckResult("unavailable", mode, "no EDA tool profile", 0.0)

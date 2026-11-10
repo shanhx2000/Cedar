@@ -397,6 +397,8 @@ def parse_saif_coverage(pt_log: Path) -> Optional[float]:
 # ---------------------------------------------------------------- stages
 
 def synthesize(ctx: FlowContext, rtl: Sequence[str], work: Path, timeout: Optional[int] = None) -> StageResult:
+    if is_external(ctx):
+        return external_ppa(ctx, rtl, work, timeout)
     work.mkdir(parents=True, exist_ok=True)
     _clear(work, ["results", "dc.log", "WORK"])
     res = work / "results"
@@ -486,6 +488,8 @@ def synth_metrics(ctx: FlowContext, r: StageResult) -> Dict[str, Metric]:
     stage = "post-synthesis"
     unit = ctx.time_unit
     out: Dict[str, Metric] = {}
+    if is_external(ctx):
+        return external_metrics(r)
     if not r.ok:
         for q in ("area", "delay", "slack"):
             out[q] = Metric.unavailable(q, stage, "dc", "failed", r.detail[:200])
@@ -865,3 +869,121 @@ def rtl_sim_check(ctx: FlowContext, design: Sequence[str], testbench: str, pass_
     if pass_marker in txt and r2.ok:
         return {"status": "passed", "detail": f"testbench printed {pass_marker}"}
     return {"status": "failed", "detail": f"pass marker {pass_marker!r} not found"}
+
+
+# ------------------------------------------------- external (open) adapters
+#
+# ``external-ppa`` and ``external-check`` delegate a stage to a user program
+# with a fixed file contract, so a site without the commercial tools can
+# measure and verify with its own flow (e.g. Yosys + ABC + OpenSTA).
+#
+# external-ppa:   <exe> [args] --top T --period-ns P --sdc FILE --out DIR
+#                 --threads N [--clock-port PORT] [--include-dir D]...
+#                 [--define K=V]... -- RTL...
+#   must exit 0 and write DIR/metrics.json:
+#     {"area_um2": float, "delay_ns": float, "slack_ns": float,
+#      "power_uW": float (optional; required for full-ppa), "source": str,
+#      "netlist": path (optional)}
+#   All metrics are reported at stage "post-synthesis"; P&R, SDF activity and
+#   PrimeTime are not run.
+# external-check: <exe> [args] --top T --work DIR --golden RTL... --revised RTL...
+#   must exit 0 and write DIR/verdict.json:
+#     {"status": "passed"|"failed"|"error", "detail": str}
+
+EXTERNAL_STAGE = "post-synthesis"
+
+
+def is_external(ctx: "FlowContext") -> bool:
+    return (ctx.tools.tools.get("synthesis") or {}).get("adapter") == "external-ppa"
+
+
+def external_ppa(ctx: FlowContext, rtl: Sequence[str], work: Path, timeout: Optional[int] = None) -> StageResult:
+    import json
+    work.mkdir(parents=True, exist_ok=True)
+    started = _clear(work, ["results", "external_ppa.log"])
+    res = work / "results"
+    res.mkdir(exist_ok=True)
+    sdc = ctx.write_sdc(work / "constraints.sdc")
+    c = ctx.clocks[0]
+    args = ["--top", ctx.top, "--period-ns", repr(float(c["period_ns_resolved"])), "--sdc", str(sdc),
+            "--out", str(res), "--threads", str(ctx.tools.threads)]
+    if c.get("port"):
+        args += ["--clock-port", c["port"]]
+    for d in ctx.include_dirs:
+        args += ["--include-dir", d]
+    for k, v in ctx.defines.items():
+        args += ["--define", f"{k}={v}" if v not in (None, "") else k]
+    args += ["--"] + [str(Path(f).resolve()) for f in rtl]
+    r = ctx.tools.run("synthesis", args, work, work / "external_ppa.log", timeout, label="synthesis")
+    mj = res / "metrics.json"
+    r.outputs = {"metrics_json": str(mj), "sdc": str(sdc)}
+    data = None
+    if r.ok:
+        if not _fresh(mj, started):
+            _fail(r, "external-ppa did not write a fresh results/metrics.json")
+        else:
+            try:
+                data = json.loads(mj.read_text())
+            except ValueError as exc:
+                _fail(r, f"metrics.json is not valid JSON: {exc}")
+    if data is not None:
+        missing = [k for k in ("area_um2", "delay_ns", "slack_ns") if not isinstance(data.get(k), (int, float))]
+        if missing:
+            _fail(r, f"metrics.json lacks numeric {missing}")
+        if data.get("netlist"):
+            r.outputs["netlist"] = str(data["netlist"])
+    r.evidence = {"metrics": data}
+    return r
+
+
+def external_metrics(r: StageResult) -> Dict[str, Metric]:
+    """area / delay / slack (and power, if reported) of an external-ppa stage."""
+    out: Dict[str, Metric] = {}
+    d = (r.evidence or {}).get("metrics") or {}
+    src = "external:" + str(d.get("source") or "ppa")
+    if not r.ok:
+        for q in ("area", "delay", "slack"):
+            out[q] = Metric.unavailable(q, EXTERNAL_STAGE, src, "failed", r.detail[:200])
+        return out
+    out["area"] = Metric.measured("area", d["area_um2"], "um2", EXTERNAL_STAGE, src)
+    out["delay"] = Metric.measured("delay", d["delay_ns"], "ns", EXTERNAL_STAGE, src)
+    out["slack"] = Metric.measured("slack", d["slack_ns"], "ns", EXTERNAL_STAGE, src)
+    return out
+
+
+def external_power_metric(r: StageResult) -> Metric:
+    d = (r.evidence or {}).get("metrics") or {}
+    src = "external:" + str(d.get("source") or "ppa")
+    if not r.ok:
+        return Metric.unavailable("power", EXTERNAL_STAGE, src, "failed", r.detail[:200])
+    if not isinstance(d.get("power_uW"), (int, float)):
+        return Metric.unavailable("power", EXTERNAL_STAGE, src, "missing", "external-ppa reported no power_uW")
+    return Metric.measured("power", d["power_uW"], "uW", EXTERNAL_STAGE, src)
+
+
+def external_check(ctx: FlowContext, golden: Sequence[str], revised: Sequence[str], work: Path,
+                   timeout: Optional[int] = None) -> Dict[str, object]:
+    """Candidate-vs-original check by the ``external-check`` adapter (fail-closed)."""
+    import json
+    work.mkdir(parents=True, exist_ok=True)
+    started = _clear(work, ["verdict.json", "external_check.log"])
+    args = ["--top", ctx.top, "--work", str(work), "--golden", *[str(Path(f).resolve()) for f in golden],
+            "--revised", *[str(Path(f).resolve()) for f in revised]]
+    r = ctx.tools.run("equivalence", args, work, work / "external_check.log", timeout, label="equivalence")
+    if r.status == "unavailable":
+        return {"status": "unavailable", "detail": r.detail}
+    if r.status == "timeout":
+        return {"status": "error", "detail": f"external check timed out: {r.detail}"}
+    vj = work / "verdict.json"
+    if not r.ok:
+        return {"status": "error", "detail": f"external check process failed (exit {r.returncode}): {r.detail[-200:]}"}
+    if not _fresh(vj, started):
+        return {"status": "error", "detail": "external check wrote no fresh verdict.json"}
+    try:
+        v = json.loads(vj.read_text())
+    except ValueError as exc:
+        return {"status": "error", "detail": f"verdict.json is not valid JSON: {exc}"}
+    st = v.get("status")
+    if st not in ("passed", "failed", "error"):
+        return {"status": "error", "detail": f"verdict.json has unknown status {st!r}"}
+    return {"status": st, "detail": str(v.get("detail", ""))[:500]}

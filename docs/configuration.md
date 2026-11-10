@@ -171,3 +171,30 @@ All stages (DC, Innovus, PrimeTime) read the same generated SDC (or your SDC
 verbatim). Every run records a `constraints_id` hash of clocks, SDC, I/O delay,
 technology profile, corner and measurement mode; frontiers only compare points
 with the same `constraints_id`, measurement mode and per-metric stage.
+
+## External (open-source) adapters
+
+Sites without the commercial tools can delegate measurement and checking to
+their own programs (for example Yosys + ABC + OpenSTA):
+
+```yaml
+tools:
+  synthesis:   {adapter: external-ppa,   executable: /path/to/ppa,   args: [...]}
+  equivalence: {adapter: external-check, executable: /path/to/check, args: [...]}
+```
+
+* `external-ppa` is called as `<exe> [args] --top T --period-ns P --sdc FILE
+  --out DIR --threads N [--clock-port PORT] [--include-dir D]... [--define K=V]...
+  -- RTL...`; it must exit 0 and write `DIR/metrics.json` with numeric
+  `area_um2`, `delay_ns`, `slack_ns`, optionally `power_uW`, `source`, `netlist`.
+  All metrics are recorded at stage `post-synthesis`; P&R, SDF activity and
+  PrimeTime are not run, so only `synthesis` (and `equivalence`) are required
+  stages. `full-ppa` needs `power_uW`. Netlist-to-e-node attribution needs DC
+  reports and is unavailable.
+* `verification.mode: external` calls `<exe> [args] --top T --work DIR --golden
+  RTL... --revised RTL...`; it must exit 0 and write `DIR/verdict.json`
+  `{"status": "passed"|"failed"|"error", "detail": ...}`. Anything else is an
+  error (fail-closed).
+
+With these adapters the technology profile needs only `units`, `corners.<c>.liberty`
+and `default_corner`.

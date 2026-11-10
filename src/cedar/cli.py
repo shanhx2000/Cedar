@@ -520,7 +520,7 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--activity-tb")
     q.add_argument("--tb-top", default="Top")
     q.add_argument("--dut-instance", default="DUT")
-    q.add_argument("--verification", choices=("conformal", "simulation", "circt-lec"), required=True)
+    q.add_argument("--verification", choices=("conformal", "simulation", "circt-lec", "external"), required=True)
     q.add_argument("--check-tb", help="self-checking testbench (simulation verification)")
     q.add_argument("--objective-preset", default="balanced")
     q.add_argument("--weights", help="area,delay,power weights, e.g. 0.3,0.2,0.5")

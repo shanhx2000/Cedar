@@ -15,12 +15,12 @@ from __future__ import annotations
 from .schema import F
 
 ADAPTERS = {
-    "synthesis": ("synopsys-dc",),
+    "synthesis": ("synopsys-dc", "external-ppa"),
     "place_route": ("cadence-innovus",),
     "simulation": ("synopsys-vcs",),
     "saif": ("synopsys-vcd2saif",),
     "power": ("synopsys-primetime",),
-    "equivalence": ("cadence-conformal",),
+    "equivalence": ("cadence-conformal", "external-check"),
 }
 
 
@@ -66,10 +66,10 @@ TOOL_PROFILE = {
 }
 
 _CORNER = F("obj", fields={
-    "db": F("list", required=True, item=F("path", glob=True), doc="Synopsys .db libraries (synthesis/power)"),
+    "db": F("list", default=[], item=F("path", glob=True), doc="Synopsys .db libraries (synthesis/power; commercial adapters)"),
     "liberty": F("list", required=True, item=F("path", glob=True), doc="Liberty .lib files (P&R timing)"),
-    "sim_models": F("list", required=True, item=F("path", glob=True), doc="Verilog cell models (gate-level simulation)"),
-    "rc_tech": F("path", required=True, doc="QRC/RC technology file for extraction"),
+    "sim_models": F("list", default=[], item=F("path", glob=True), doc="Verilog cell models (gate-level simulation; commercial adapters)"),
+    "rc_tech": F("path", doc="QRC/RC technology file for extraction (commercial adapters)"),
 })
 
 TECHNOLOGY = {
@@ -82,7 +82,7 @@ TECHNOLOGY = {
     }),
     "corners": F("map", required=True, item=_CORNER, doc="named PVT corners"),
     "default_corner": F("str", required=True),
-    "lef": F("obj", required=True, fields={
+    "lef": F("obj", doc="required by the commercial P&R adapter", fields={
         "tech": F("path", required=True),
         "cells": F("list", required=True, item=F("path", glob=True)),
     }),
@@ -96,7 +96,7 @@ TECHNOLOGY = {
         "pre_compile_hook": F("path", doc="Tcl sourced before compile"),
         "post_compile_hook": F("path", doc="Tcl sourced after compile"),
     }),
-    "place_route": F("obj", required=True, fields={
+    "place_route": F("obj", doc="required by the commercial P&R adapter", fields={
         "site": F("str", required=True),
         "core_utilization": F("float", min=0.05, max=1.0, default=0.6),
         "core_margin": F("float", min=0, default=4.0, unit="um"),
@@ -155,7 +155,7 @@ DESIGN = {
         "seed": F("int", default=1),
     }),
     "verification": F("obj", required=True, fields={
-        "mode": F("enum", required=True, choices=("conformal", "simulation", "circt-lec"),
+        "mode": F("enum", required=True, choices=("conformal", "simulation", "circt-lec", "external"),
                   doc="candidate correctness backend (fail-closed)"),
         "testbench": F("path", doc="self-checking testbench (simulation mode) that prints pass_marker"),
         "pass_marker": F("str", default="CEDAR_TB_PASS"),

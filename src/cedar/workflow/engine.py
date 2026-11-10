@@ -571,9 +571,10 @@ class Run:
 
     def required_stages(self) -> List[str]:
         mode = self.s["measurement"].get("mode", "full-ppa")
-        stages = ["synthesis"] if mode == "synthesis-only" else ["synthesis", "place_route", "simulation", "saif", "power"]
+        stages = ["synthesis"] if mode == "synthesis-only" or flow.is_external(self.ctx) else \
+            ["synthesis", "place_route", "simulation", "saif", "power"]
         vm = self.verification_mode
-        if vm == "conformal":
+        if vm in ("conformal", "external"):
             stages.append("equivalence")
         elif vm == "simulation" and "simulation" not in stages:
             stages.append("simulation")
@@ -638,7 +639,8 @@ class Run:
             b = self.s["candidates"]["baseline"]["measurement"]
             bp = PPA.from_dict(b["ppa"])
             prune = {"area": bp.get("area"), "delay": bp.get("delay"), "power": b["info"].get("dc_vectorless_power_uW")}
-        meas = measure(self.ctx, rtl, self.dir / "measure" / name, self._activity(), m.get("mode", "full-ppa"),
+        activity = {} if flow.is_external(self.ctx) else self._activity()
+        meas = measure(self.ctx, rtl, self.dir / "measure" / name, activity, m.get("mode", "full-ppa"),
                        self.s["constraints_id"], prune)
         return meas.to_dict()
 
@@ -1425,8 +1427,11 @@ class Run:
             "top": self.s["top"], "objective": self.objective.to_dict(),
             "objective_text": self.objective.describe(), "constraints_id": self.s["constraints_id"],
             "clock": self.clock_desc(), "measurement": self.s["measurement"],
-            "metric_stages": {"area": "post-synthesis (DC)", "delay": "post-synthesis (DC)",
-                              "power": "post-route PrimeTime with SAIF (SDF gate-level simulation) + SPEF"},
+            "metric_stages": ({"area": "post-synthesis (external-ppa adapter)",
+                               "delay": "post-synthesis (external-ppa adapter)",
+                               "power": "post-synthesis (external-ppa adapter)"} if flow.is_external(self.ctx) else
+                              {"area": "post-synthesis (DC)", "delay": "post-synthesis (DC)",
+                               "power": "post-route PrimeTime with SAIF (SDF gate-level simulation) + SPEF"}),
             "verification_mode": self.verification_mode, "preset": self.settings["preset"],
             "execution_contract": contract,
             "iteration_outcomes": [{"iteration": x["iteration"], "successful": self._iter_ok(x),

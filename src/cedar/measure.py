@@ -68,6 +68,10 @@ def measure(ctx: flow.FlowContext, rtl: List[str], work: Path, activity: dict, m
     ppa.timing_met = (slack.value >= 0) if slack is not None and slack.ok else None
     dcp = _dc_vectorless_power_uw(Path(syn.outputs.get("power_rpt", ""))) if syn.ok else None
     m.info["dc_vectorless_power_uW"] = dcp
+    if flow.is_external(ctx) and mode != "synthesis-only":
+        # external-ppa measures every metric in one post-synthesis stage
+        ppa.metrics["power"] = flow.external_power_metric(syn)
+        return m
     if mode == "synthesis-only":
         ppa.metrics["power"] = Metric.unavailable("power", "post-route", "primetime", "skipped",
                                                   "synthesis-only measurement mode")
