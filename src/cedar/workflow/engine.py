@@ -430,7 +430,8 @@ class Run:
                     self.log(f"running unattended agent for task {task.id} ({task.kind})")
                     for o in task.outputs:          # stale outputs of an earlier attempt never count
                         Path(o.path).unlink(missing_ok=True)
-                    info = run_agent_command(agent_cmd, task, self.dir)
+                    info = run_agent_command(agent_cmd, task, self.dir,
+                                             timeout=int(os.environ.get("CEDAR_AGENT_TIMEOUT_S", "1800")))
                     self.time_phase(f"agent:{task.kind}", float(info["seconds"]))
                     if self.budget_expired():
                         return self._expire(f"agent:{task.kind}")
